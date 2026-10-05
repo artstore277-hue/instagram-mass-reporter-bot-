@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  ig-report-bot:
+    build: .
+    container_name: ig-report-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+      - ./proxies.txt:/app/proxies.txt:ro
+      - ./cookies:/app/cookies
+      - ./chrome_extensions:/app/chrome_extensions
+      - ./igx_db.json:/app/igx_db.json
+      - ./igx_users.json:/app/igx_users.json
+      - ./igx_sess.json:/app/igx_sess.json
+      - ./igx_presets.json:/app/igx_presets.json
+      - ./igx_account_state.json:/app/igx_account_state.json
+      - ./igx_proxy_state.json:/app/igx_proxy_state.json
+      - ./image.jpg:/app/image.jpg:ro
+    environment:
+      - TZ=UTC
+      - CHROME_BIN=/usr/bin/chromium
+      - CHROMEDRIVER_PATH=/usr/bin/chromedriver
+    shm_size: "1gb"

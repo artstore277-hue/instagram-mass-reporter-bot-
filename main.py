@@ -63,7 +63,7 @@ CFG = yaml.safe_load(_raw) or {}
 TOKEN = CFG["bot"]["token"]
 BRAND = CFG["bot"].get("name", "Instagram Report")
 OWNER = CFG["bot"].get("author", "Admin")
-CONTACT = CFG["bot"].get("contact", "admin")
+CONTACT = str(CFG["bot"].get("contact", "admin")).strip().lstrip("@")
 ADMIN_IDS = [int(x) for x in CFG["bot"].get("admin_ids", [])]
 
 FORCE_JOIN_ENABLED = CFG.get("force_join", {}).get("enabled", False)
@@ -187,6 +187,32 @@ def db_save():
     persist_json(PRESET_FILE, dict(PRESETS))
     persist_json(ACCOUNT_FILE, ACCOUNT_STATE)
     persist_json(PROXY_STATE_FILE_FULL, PROXY_STATE)
+
+
+def normalize_user_ref(value):
+    if value is None:
+        return None
+    q = str(value).strip()
+    if not q:
+        return None
+    q = q.lstrip("@")
+    return q
+
+
+def resolve_user_ref(value):
+    q = normalize_user_ref(value)
+    if q is None:
+        return None
+    q_lower = q.lower()
+    if q.isdigit() and str(q) in USERS:
+        return str(q)
+    if q in USERS:
+        return str(q)
+    for uid, user in USERS.items():
+        username = str(user.get("username", "")).lower().lstrip("@")
+        if username == q_lower:
+            return str(uid)
+    return None
 
 
 def ensure_user(tg_user):
@@ -552,7 +578,7 @@ def build_driver(proxy=None):
     if HEADLESS:
         o.add_argument("--headless=new")
     else:
-        o.add_argument("--headless=new")  # remove if want visible browser
+        o.add_argument("--headless=new")
     o.add_argument("--no-sandbox")
     o.add_argument("--disable-dev-shm-usage")
     o.add_argument("--disable-gpu")
@@ -820,7 +846,8 @@ def force_join_inline():
 
 
 def premium_inline():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Contact Admin", url=f"https://t.me/{CONTACT}")]])
+    contact_target = CONTACT if CONTACT else "admin"
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Contact Admin", url=f"https://t.me/{contact_target}")]])
 
 
 def profile_caption(uid):
@@ -1172,7 +1199,7 @@ async def handle_text(update, ctx):
             return
         if text == "👤 To One User":
             ctx.user_data["step"] = "admin_gift_one_id"
-            await edit_or_reply(update, ctx, "Send the user ID:", cancel_kb())
+            await edit_or_reply(update, ctx, "Send the user ID or username:", cancel_kb())
             return
         if text == "🌍 To Everyone":
             ctx.user_data["step"] = "admin_gift_all"
@@ -1180,11 +1207,11 @@ async def handle_text(update, ctx):
             return
         if text == "💎 Add Premium":
             ctx.user_data["step"] = "admin_addprem"
-            await edit_or_reply(update, ctx, "Send user ID to add premium:", cancel_kb())
+            await edit_or_reply(update, ctx, "Send user ID or username to add premium:", cancel_kb())
             return
         if text == "🚫 Remove Premium":
             ctx.user_data["step"] = "admin_delprem"
-            await edit_or_reply(update, ctx, "Send user ID to remove premium:", cancel_kb())
+            await edit_or_reply(update, ctx, "Send user ID or username to remove premium:", cancel_kb())
             return
         if text == "👥 View Users":
             lines = [f"<pre>{head('USERS')}</pre>"]
@@ -1224,10 +1251,11 @@ async def handle_text(update, ctx):
         return
 
     if step == "admin_gift_one_id":
-        if not text.isdigit():
-            await edit_or_reply(update, ctx, "Send a valid ID.")
+        target = resolve_user_ref(text)
+        if target is None:
+            await edit_or_reply(update, ctx, "Send a valid ID or username.")
             return
-        ctx.user_data["gift_target"] = text
+        ctx.user_data["gift_target"] = target
         ctx.user_data["step"] = "admin_gift_one_amt"
         await edit_or_reply(update, ctx, "Send points amount:", cancel_kb())
         return
@@ -1238,6 +1266,9 @@ async def handle_text(update, ctx):
             return
         amt = int(text)
         target = ctx.user_data.get("gift_target")
+        if target is None:
+            await edit_or_reply(update, ctx, "No target selected.", admin_menu_kb())
+            return
         add_points(target, amt, f"admin gift by {uid}")
         db_save()
         try:
@@ -1261,34 +1292,30 @@ async def handle_text(update, ctx):
         return
 
     if step == "admin_addprem":
-        if not text.isdigit():
-            await edit_or_reply(update, ctx, "Send a valid user ID.")
-            return
-        if text not in USERS:
+        target = resolve_user_ref(text)
+        if target is None:
             await edit_or_reply(update, ctx, "User not found.")
             return
-        USERS[text]["premium"] = True
-        USERS[text]["premium_until"] = 0
+        USERS[target]["premium"] = True
+        USERS[target]["premium_until"] = 0
         db_save()
         try:
-            await ctx.bot.send_message(int(text), "💎 Your premium has been activated!")
+            await ctx.bot.send_message(int(target), "💎 Your premium has been activated!")
         except Exception:
             pass
         ctx.user_data.clear()
-        await edit_or_reply(update, ctx, f"✔ Premium added to <code>{text}</code>.", admin_menu_kb())
+        await edit_or_reply(update, ctx, f"✔ Premium added to <code>{target}</code>.", admin_menu_kb())
         return
 
     if step == "admin_delprem":
-        if not text.isdigit():
-            await edit_or_reply(update, ctx, "Send a valid user ID.")
-            return
-        if text not in USERS:
+        target = resolve_user_ref(text)
+        if target is None:
             await edit_or_reply(update, ctx, "User not found.")
             return
-        USERS[text]["premium"] = False
+        USERS[target]["premium"] = False
         db_save()
         ctx.user_data.clear()
-        await edit_or_reply(update, ctx, f"✔ Premium removed from <code>{text}</code>.", admin_menu_kb())
+        await edit_or_reply(update, ctx, f"✔ Premium removed from <code>{target}</code>.", admin_menu_kb())
         return
 
     if step == "add_ig":

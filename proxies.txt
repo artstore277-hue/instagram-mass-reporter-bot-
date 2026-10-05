@@ -1,9 +1,0 @@
-# Instagram Report Bot — Proxy List
-# Format: socks5://user:pass@host:port  OR  host:port
-# Lines starting with # are ignored.
-
-socks5://user1:pass1@192.111.139.165:4145
-socks5://user2:pass2@8.208.90.194:8015
-socks5://8.208.90.194:8085
-8.219.74.58:20000
-user4:pass4@8.219.74.58:56

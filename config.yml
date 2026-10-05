@@ -1,0 +1,83 @@
+bot:
+  name: "Instagram Report Bot"
+  author: "Fluxo"
+  token: "8677244080:AAGuj5STG67GGHENLgXbfuqwTTBpDK5v9Kk"
+  contact: "@FLU_X0"
+  admin_ids:
+    - 6128148604
+
+force_join:
+  enabled: false
+  channel: "@your_channel"
+  group: "@your_group"
+  channel_url: "https://t.me/your_channel"
+  group_url: "https://t.me/your_group"
+
+referral:
+  enabled: false
+  points_per_ref: 100
+  points_per_report: 300
+  bonus_at_count: 3
+  bonus_points: 300
+
+selenium:
+  browser: "chrome"
+  headless: true
+  window_size: "1920,1080"
+  implicit_wait: 10
+  page_load_timeout: 30
+  cookie_dir: "cookies"
+  extension_dir: "chrome_extensions"
+  options:
+    - "--no-sandbox"
+    - "--disable-dev-shm-usage"
+    - "--disable-blink-features=AutomationControlled"
+    - "--disable-gpu"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+instagram:
+  base_url: "https://www.instagram.com"
+  login_url: "https://www.instagram.com/accounts/login/"
+
+proxies:
+  enabled: false
+  list_file: "proxies.txt"
+  state_file: "igx_proxy_state.json"
+  check_url: "https://api.ipify.org?format=json"
+  check_timeout: 15
+  rotate: "least_used"
+  max_fails: 3
+  cooldown: 600
+  auto_prune: true
+  revalidate_every: 1800
+  max_check_concurrent: 20
+
+rotation:
+  mode: "round_robin"
+  max_fails: 5
+
+reporting:
+  max_reports: 200
+  request_delay_min: 1.5
+  request_delay_max: 3.0
+  retry_delay: 5
+  max_retries: 3
+  reasons:
+    "1": "I just don't like it"
+    "2": "It's spam"
+    "3": "Bullying or harassment"
+    "4": "Self-injury"
+    "5": "Nudity or sexual activity"
+    "6": "Hate speech or symbols"
+    "7": "False information"
+    "8": "Scam or fraud"
+    "9": "Violence or dangerous organizations"
+    "10": "Intellectual property violation"
+    "11": "Sale or promotion of drugs"
+    "12": "Something else"
+
+logging:
+  level: "INFO"
+  format: "[%(asctime)s] %(levelname)-8s %(name)s — %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+  file_prefix: "igx"

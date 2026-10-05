@@ -1,0 +1,9 @@
+python-telegram-bot
+selenium
+webdriver-manager
+python-dotenv
+pyyaml
+requests[socks]
+PySocks
+httpx[socks]
+httpx-socks[asyncio]

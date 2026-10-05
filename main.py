@@ -7,21 +7,17 @@ import pickle
 import shutil
 import asyncio
 import logging
-import io
 from datetime import datetime
 from collections import defaultdict
 
 import yaml
 from dotenv import load_dotenv
 from telegram import (
-    Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
     KeyboardButton,
     BotCommand,
-    ChatMember,
-    LinkPreviewOptions,
 )
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.ext import (
@@ -30,14 +26,12 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
-    ContextTypes,
 )
 
 import httpx
 from httpx_socks import AsyncProxyTransport
 from python_socks.async_.asyncio import Proxy as SocksProxy
 import socks
-import socket
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -55,23 +49,28 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 load_dotenv()
 
-with open("config.yml", "r", encoding="utf-8-sig") as _f:
+CONFIG_PATH = os.getenv("CONFIG_FILE", "config.yml")
+
+if not os.path.exists(CONFIG_PATH):
+    raise SystemExit(f"Missing config file: {CONFIG_PATH}. Copy config.yml.example and fill required values.")
+
+with open(CONFIG_PATH, "r", encoding="utf-8-sig") as _f:
     _raw = _f.read()
 for _k, _v in os.environ.items():
-    _raw = _raw.replace(f"${{{_k}}}", _v)
-CFG = yaml.safe_load(_raw)
+    _raw = _raw.replace(f"${{{_k}}}", str(_v))
+CFG = yaml.safe_load(_raw) or {}
 
 TOKEN = CFG["bot"]["token"]
-BRAND = CFG["bot"]["name"]
-OWNER = CFG["bot"]["author"]
+BRAND = CFG["bot"].get("name", "Instagram Report")
+OWNER = CFG["bot"].get("author", "Admin")
 CONTACT = CFG["bot"].get("contact", "admin")
 ADMIN_IDS = [int(x) for x in CFG["bot"].get("admin_ids", [])]
 
 FORCE_JOIN_ENABLED = CFG.get("force_join", {}).get("enabled", False)
-FORCE_CHANNEL = CFG["force_join"].get("channel", "")
-FORCE_GROUP = CFG["force_join"].get("group", "")
-FORCE_CHANNEL_URL = CFG["force_join"].get("channel_url", "")
-FORCE_GROUP_URL = CFG["force_join"].get("group_url", "")
+FORCE_CHANNEL = CFG.get("force_join", {}).get("channel", "")
+FORCE_GROUP = CFG.get("force_join", {}).get("group", "")
+FORCE_CHANNEL_URL = CFG.get("force_join", {}).get("channel_url", "")
+FORCE_GROUP_URL = CFG.get("force_join", {}).get("group_url", "")
 
 REFERRAL_ENABLED = CFG.get("referral", {}).get("enabled", True)
 POINTS_PER_REF = CFG.get("referral", {}).get("points_per_ref", 100)
@@ -79,27 +78,27 @@ POINTS_PER_REPORT = CFG.get("referral", {}).get("points_per_report", 300)
 BONUS_REF_COUNT = CFG.get("referral", {}).get("bonus_at_count", 3)
 BONUS_REF_POINTS = CFG.get("referral", {}).get("bonus_points", 300)
 
-HEADLESS = CFG["selenium"]["headless"]
-WINDOW = CFG["selenium"]["window_size"]
-IWAIT = CFG["selenium"]["implicit_wait"]
-PLOAD = CFG["selenium"]["page_load_timeout"]
-UA = CFG["selenium"]["user_agent"]
-SOPTS = CFG["selenium"]["options"]
+HEADLESS = CFG.get("selenium", {}).get("headless", True)
+WINDOW = CFG.get("selenium", {}).get("window_size", "1920,1080")
+IWAIT = CFG.get("selenium", {}).get("implicit_wait", 10)
+PLOAD = CFG.get("selenium", {}).get("page_load_timeout", 30)
+UA = CFG.get("selenium", {}).get("user_agent", "Mozilla/5.0")
+SOPTS = CFG.get("selenium", {}).get("options", [])
 
-COOKIE_DIR = CFG["selenium"].get("cookie_dir", "cookies")
-EXT_DIR = CFG["selenium"].get("extension_dir", "chrome_extensions")
+COOKIE_DIR = CFG.get("selenium", {}).get("cookie_dir", "cookies")
+EXT_DIR = CFG.get("selenium", {}).get("extension_dir", "chrome_extensions")
 os.makedirs(COOKIE_DIR, exist_ok=True)
 os.makedirs(EXT_DIR, exist_ok=True)
 
-IG_HOME = CFG["instagram"]["base_url"]
-IG_LOGIN = CFG["instagram"]["login_url"]
+IG_HOME = CFG.get("instagram", {}).get("base_url", "https://www.instagram.com")
+IG_LOGIN = CFG.get("instagram", {}).get("login_url", "https://www.instagram.com/accounts/login/")
 
-D_MIN = CFG["reporting"]["request_delay_min"]
-D_MAX = CFG["reporting"]["request_delay_max"]
-RETRY = CFG["reporting"]["retry_delay"]
-RETRIES = CFG["reporting"]["max_retries"]
-REASONS = CFG["reporting"]["reasons"]
-CAP = CFG["reporting"]["max_reports"]
+D_MIN = CFG.get("reporting", {}).get("request_delay_min", 1.5)
+D_MAX = CFG.get("reporting", {}).get("request_delay_max", 3.0)
+RETRY = CFG.get("reporting", {}).get("retry_delay", 5)
+RETRIES = CFG.get("reporting", {}).get("max_retries", 3)
+REASONS = CFG.get("reporting", {}).get("reasons", {"1": "Something else"})
+CAP = CFG.get("reporting", {}).get("max_reports", 200)
 
 PCFG = CFG.get("proxies", {})
 PROXY_ENABLED = PCFG.get("enabled", False)
@@ -114,8 +113,12 @@ PROXY_AUTO_PRUNE = PCFG.get("auto_prune", True)
 PROXY_REVALIDATE_EVERY = PCFG.get("revalidate_every", 1800)
 PROXY_MAX_CHECK_CONCURRENT = PCFG.get("max_check_concurrent", 20)
 
-ROT_MODE = CFG.get("rotation", {}).get("mode", "round_robin")
-ACCOUNT_MAX_FAILS = CFG.get("rotation", {}).get("max_fails", 5)
+DB_FILE = "igx_db.json"
+USERS_FILE = "igx_users.json"
+SESS_FILE = "igx_sess.json"
+PRESET_FILE = "igx_presets.json"
+ACCOUNT_FILE = "igx_account_state.json"
+PROXY_STATE_FILE_FULL = PROXY_STATE_FILE
 
 TYPE_MAP = {
     "profile": ("👤", "Profile"),
@@ -125,24 +128,15 @@ TYPE_MAP = {
 }
 
 logging.basicConfig(
-    level=getattr(logging, CFG["logging"]["level"], logging.INFO),
-    format=CFG["logging"]["format"],
-    datefmt=CFG["logging"]["date_format"],
+    level=getattr(logging, CFG.get("logging", {}).get("level", "INFO"), logging.INFO),
+    format=CFG.get("logging", {}).get("format", "[%(asctime)s] %(levelname)-8s %(name)s — %(message)s"),
+    datefmt=CFG.get("logging", {}).get("date_format", "%Y-%m-%d %H:%M:%S"),
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(
-            f"{CFG['logging']['file_prefix']}_{datetime.now():%Y%m%d}.log"
-        ),
+        logging.FileHandler(f"{CFG.get('logging', {}).get('file_prefix', 'igx')}_{datetime.now():%Y%m%d}.log"),
     ],
 )
 log = logging.getLogger("igx")
-
-DB_FILE = "igx_db.json"
-USERS_FILE = "igx_users.json"
-SESS_FILE = "igx_sess.json"
-PRESET_FILE = "igx_presets.json"
-ACCOUNT_FILE = "igx_account_state.json"
-PROXY_STATE_FILE_FULL = "igx_proxy_state.json"
 
 DB = {"stats": {}, "history": []}
 USERS = {}
@@ -157,12 +151,12 @@ def safe_name(s):
 
 
 def cookie_path(uid, u):
-    return os.path.join(COOKIE_DIR, f"{safe_name(uid)}__{safe_name(u)}.pkl")
+    return os.path.join(COOKIE_DIR, f"{safe_name(str(uid))}__{safe_name(u)}.pkl")
 
 
 def persist_json(path, obj):
     try:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(obj, f, indent=2)
     except Exception as e:
         log.warning(f"persist {path} fail: {e}")
@@ -170,7 +164,7 @@ def persist_json(path, obj):
 
 def load_json(path, default):
     try:
-        with open(path) as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default
@@ -187,7 +181,7 @@ def db_load():
 
 
 def db_save():
-    persist_json(DB_FILE, {"stats": DB["stats"], "history": DB["history"][-1000:]})
+    persist_json(DB_FILE, {"stats": DB.get("stats", {}), "history": DB.get("history", [])[-1000:]})
     persist_json(USERS_FILE, USERS)
     persist_json(SESS_FILE, SESS)
     persist_json(PRESET_FILE, dict(PRESETS))
@@ -221,7 +215,10 @@ def ensure_user(tg_user):
 
 
 def is_admin(uid):
-    return int(uid) in ADMIN_IDS
+    try:
+        return int(uid) in ADMIN_IDS
+    except Exception:
+        return False
 
 
 def is_premium(uid):
@@ -364,7 +361,7 @@ class ProxyManager:
             log.warning(f"proxy file missing: {PROXY_LIST_FILE}")
             return []
         out = []
-        with open(PROXY_LIST_FILE) as f:
+        with open(PROXY_LIST_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -377,11 +374,7 @@ class ProxyManager:
         return out
 
     def prune_dead(self):
-        pruned = [
-            p
-            for p in self.active
-            if p.key() in PROXY_STATE and not PROXY_STATE[p.key()].get("dead", False)
-        ]
+        pruned = [p for p in self.active if p.key() not in PROXY_STATE or not PROXY_STATE[p.key()].get("dead", False)]
         removed = len(self.active) - len(pruned)
         self.active = pruned
         return removed
@@ -451,11 +444,7 @@ class ProxyManager:
 
     def available(self):
         now = time.time()
-        return [
-            p
-            for p in self.active
-            if PROXY_STATE.get(p.key(), {}).get("banned_until", 0) <= now
-        ]
+        return [p for p in self.active if PROXY_STATE.get(p.key(), {}).get("banned_until", 0) <= now]
 
     def get(self):
         if not self.active:
@@ -466,10 +455,7 @@ class ProxyManager:
         if PROXY_ROTATE == "random":
             return random.choice(avail)
         if PROXY_ROTATE == "least_used":
-            return min(
-                avail,
-                key=lambda p: PROXY_STATE.get(p.key(), {}).get("last_used", 0),
-            )
+            return min(avail, key=lambda p: PROXY_STATE.get(p.key(), {}).get("last_used", 0))
         self.index = self.index % len(avail)
         chosen = avail[self.index]
         self.index += 1
@@ -493,14 +479,12 @@ class ProxyManager:
         for p in self.active:
             s = PROXY_STATE.get(p.key(), {})
             cd = max(int(s.get("banned_until", 0) - time.time()), 0)
-            out.append(
-                {
-                    "key": p.key(),
-                    "latency": s.get("latency", 0),
-                    "fails": s.get("fails", 0),
-                    "cooldown": cd,
-                }
-            )
+            out.append({
+                "key": p.key(),
+                "latency": s.get("latency", 0),
+                "fails": s.get("fails", 0),
+                "cooldown": cd,
+            })
         return out
 
     def __len__(self):
@@ -518,19 +502,11 @@ def build_chrome_extension(proxy):
         "version": "1.0.0",
         "manifest_version": 2,
         "name": "IG Proxy Auth",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "<all_urls>",
-            "webRequest",
-            "webRequestBlocking",
-        ],
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
         "background": {"scripts": ["background.js"]},
         "minimum_chrome_version": "22.0.0",
     }
-    with open(os.path.join(path, "manifest.json"), "w") as f:
+    with open(os.path.join(path, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f)
     bg = (
         "var config = {\n"
@@ -559,7 +535,7 @@ def build_chrome_extension(proxy):
         "  ['blocking']\n"
         ");\n"
     )
-    with open(os.path.join(path, "background.js"), "w") as f:
+    with open(os.path.join(path, "background.js"), "w", encoding="utf-8") as f:
         f.write(bg)
     return path
 
@@ -635,15 +611,11 @@ def click(d, by, val, t=10, r=2):
 def click_any(d, sels, t=8):
     for by, val in sels:
         try:
-            els = WebDriverWait(d, t).until(
-                EC.presence_of_all_elements_located((by, val))
-            )
+            els = WebDriverWait(d, t).until(EC.presence_of_all_elements_located((by, val)))
             for el in els:
                 try:
                     if el.is_displayed():
-                        d.execute_script(
-                            "arguments[0].scrollIntoView({block:'center'});", el
-                        )
+                        d.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
                         time.sleep(random.uniform(0.3, 0.7))
                         try:
                             el.click()
@@ -701,9 +673,7 @@ def do_login(d, u, p):
             d.get(IG_LOGIN)
             pause(2.0, 3.2)
             w = WebDriverWait(d, 20)
-            uf = w.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username']"))
-            )
+            uf = w.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='username']")))
             uf.clear()
             uf.send_keys(u)
             pf = d.find_element(By.CSS_SELECTOR, "input[name='password']")
@@ -719,7 +689,7 @@ def do_login(d, u, p):
                 continue
             return True
         except Exception as e:
-            log.warning(f"login {i+1}: {e}")
+            log.warning(f"login {i + 1}: {e}")
             time.sleep(RETRY)
     return False
 
@@ -727,17 +697,7 @@ def do_login(d, u, p):
 def uname(url):
     try:
         for x in url.rstrip("/").split("/"):
-            if x and x not in (
-                "www.instagram.com",
-                "instagram.com",
-                "https:",
-                "http:",
-                "p",
-                "reel",
-                "reels",
-                "stories",
-                "tv",
-            ):
+            if x and x not in ("www.instagram.com", "instagram.com", "https:", "http:", "p", "reel", "reels", "stories", "tv"):
                 return x.split("?")[0][:40]
     except Exception:
         pass
@@ -752,40 +712,24 @@ def do_report(d, ttype, url, rkey):
     if "accounts/login" in d.current_url.lower():
         raise Exception("expired")
     if ttype in ("post", "reel"):
-        msel = [
-            (By.CSS_SELECTOR, "svg[aria-label='More options']"),
-            (By.XPATH, "//*[local-name()='svg'][@aria-label='More options']"),
-        ]
+        msel = [(By.CSS_SELECTOR, "svg[aria-label='More options']"), (By.XPATH, "//*[local-name()='svg'][@aria-label='More options']")]
     elif ttype == "story":
         msel = [(By.CSS_SELECTOR, "svg[aria-label='More options']")]
     else:
-        msel = [
-            (By.CSS_SELECTOR, "svg[aria-label='Options']"),
-            (By.CSS_SELECTOR, "svg[aria-label='More options']"),
-        ]
+        msel = [(By.CSS_SELECTOR, "svg[aria-label='Options']"), (By.CSS_SELECTOR, "svg[aria-label='More options']")]
     if not click_any(d, msel):
         raise Exception("menu_missing")
     pause()
-    rsel = [
-        (By.XPATH, "//*[text()='Report']"),
-        (By.XPATH, "//*[contains(text(),'Report')]"),
-    ]
+    rsel = [(By.XPATH, "//*[text()='Report']"), (By.XPATH, "//*[contains(text(),'Report')]")]
     if not click_any(d, rsel):
         raise Exception("report_missing")
     pause()
-    txt = REASONS.get(rkey, "Something else")
-    asel = [
-        (By.XPATH, f"//*[text()='{txt}']"),
-        (By.XPATH, f"//*[contains(text(),'{txt}')]"),
-    ]
+    txt = REASONS.get(str(rkey), "Something else")
+    asel = [(By.XPATH, f"//*[text()='{txt}']"), (By.XPATH, f"//*[contains(text(),'{txt}')]")]
     if not click_any(d, asel):
         raise Exception("reason_missing")
     pause()
-    for by, val in [
-        (By.XPATH, "//*[text()='Submit']"),
-        (By.XPATH, "//*[text()='Next']"),
-        (By.XPATH, "//*[text()='Done']"),
-    ]:
+    for by, val in [(By.XPATH, "//*[text()='Submit']"), (By.XPATH, "//*[text()='Next']"), (By.XPATH, "//*[text()='Done']")]:
         if click(d, by, val, t=5):
             break
     pause(0.7, 1.3)
@@ -799,11 +743,7 @@ async def check_force_join(bot, uid):
         if FORCE_CHANNEL:
             try:
                 m = await bot.get_chat_member(FORCE_CHANNEL, uid)
-                if m.status not in (
-                    ChatMemberStatus.MEMBER,
-                    ChatMemberStatus.ADMINISTRATOR,
-                    ChatMemberStatus.OWNER,
-                ):
+                if m.status not in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
                     return False
             except Exception as e:
                 log.warning(f"channel check err: {e}")
@@ -811,11 +751,7 @@ async def check_force_join(bot, uid):
         if FORCE_GROUP:
             try:
                 m = await bot.get_chat_member(FORCE_GROUP, uid)
-                if m.status not in (
-                    ChatMemberStatus.MEMBER,
-                    ChatMemberStatus.ADMINISTRATOR,
-                    ChatMemberStatus.OWNER,
-                ):
+                if m.status not in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
                     return False
             except Exception as e:
                 log.warning(f"group check err: {e}")
@@ -830,38 +766,31 @@ def main_menu_kb(uid):
     admin_btn = []
     if is_admin(uid):
         admin_btn = [[KeyboardButton("🛡 Admin Panel")]]
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("⚡ Quick Report"), KeyboardButton("🎛 Custom Report")],
-            [KeyboardButton("👥 My Accounts"), KeyboardButton("🌐 Proxies")],
-            [KeyboardButton("👤 Profile"), KeyboardButton("🏆 Leaderboard")],
-            [KeyboardButton("🎁 Refer & Earn"), KeyboardButton("📊 My Stats")],
-            [KeyboardButton("📜 History"), KeyboardButton("ℹ️ Info")],
-        ] + admin_btn,
-        resize_keyboard=True,
-        input_field_placeholder="Choose an action...",
-    )
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("⚡ Quick Report"), KeyboardButton("🎛 Custom Report")],
+        [KeyboardButton("👥 My Accounts"), KeyboardButton("🌐 Proxies")],
+        [KeyboardButton("👤 Profile"), KeyboardButton("🏆 Leaderboard")],
+        [KeyboardButton("🎁 Refer & Earn"), KeyboardButton("📊 My Stats")],
+        [KeyboardButton("📜 History"), KeyboardButton("ℹ️ Info")],
+    ] + admin_btn, resize_keyboard=True, input_field_placeholder="Choose an action...")
 
 
 def type_menu_kb():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("👤 Profile"), KeyboardButton("🖼 Post")],
-            [KeyboardButton("🎞 Reel"), KeyboardButton("📖 Story")],
-            [KeyboardButton("🎲 Random Mix")],
-            [KeyboardButton("↩️ Back")],
-        ],
-        resize_keyboard=True,
-    )
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("👤 Profile"), KeyboardButton("🖼 Post")],
+        [KeyboardButton("🎞 Reel"), KeyboardButton("📖 Story")],
+        [KeyboardButton("🎲 Random Mix")],
+        [KeyboardButton("↩️ Back")],
+    ], resize_keyboard=True)
 
 
 def reason_menu_kb():
     items = list(REASONS.items())
     rows = []
     for i in range(0, len(items), 2):
-        row = [KeyboardButton(f"{i+1}. {items[i][1]}")]
+        row = [KeyboardButton(f"{i + 1}. {items[i][1]}")]
         if i + 1 < len(items):
-            row.append(KeyboardButton(f"{i+2}. {items[i+1][1]}"))
+            row.append(KeyboardButton(f"{i + 2}. {items[i + 1][1]}"))
         rows.append(row)
     rows.append([KeyboardButton("🎲 Random Reason")])
     rows.append([KeyboardButton("↩️ Back")])
@@ -869,10 +798,7 @@ def reason_menu_kb():
 
 
 def cancel_kb():
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton("↩️ Back")]],
-        resize_keyboard=True,
-    )
+    return ReplyKeyboardMarkup([[KeyboardButton("↩️ Back")]], resize_keyboard=True)
 
 
 def force_join_inline():
@@ -886,9 +812,7 @@ def force_join_inline():
 
 
 def premium_inline():
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("💎 Contact Admin", url=f"https://t.me/{CONTACT}")]]
-    )
+    return InlineKeyboardMarkup([[InlineKeyboardButton("💎 Contact Admin", url=f"https://t.me/{CONTACT}")]])
 
 
 def profile_caption(uid):
@@ -908,27 +832,16 @@ def profile_caption(uid):
 
 
 def leaderboard_caption():
-    top = sorted(
-        [(uid, u) for uid, u in USERS.items() if u.get("referrals")],
-        key=lambda x: len(x[1].get("referrals", [])),
-        reverse=True,
-    )[:5]
+    top = sorted([(uid, u) for uid, u in USERS.items() if u.get("referrals")], key=lambda x: len(x[1].get("referrals", [])), reverse=True)[:5]
     if not top:
         body = "<i>No referrals yet.</i>"
     else:
         lines = []
         medals = ["🥇", "🥈", "🥉", "🏅", "🎖"]
         for i, (uid, u) in enumerate(top):
-            lines.append(
-                f"{medals[i]} <b>{u.get('first_name','?')[:18]}</b> · "
-                f"{len(u.get('referrals',[]))} refs · {u.get('points',0):,} pts"
-            )
+            lines.append(f"{medals[i]} <b>{u.get('first_name','?')[:18]}</b> · {len(u.get('referrals',[]))} refs · {u.get('points',0):,} pts")
         body = "\n".join(lines)
-    return (
-        f"<pre>{head('LEADERBOARD TOP 5')}</pre>\n"
-        f"{body}\n\n"
-        f"<i>{OWNER}</i>"
-    )
+    return f"<pre>{head('LEADERBOARD TOP 5')}</pre>\n{body}\n\n<i>{OWNER}</i>"
 
 
 def refer_caption(uid, bot_username):
@@ -980,85 +893,54 @@ def admin_caption():
 
 
 def admin_menu_kb():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("📢 Broadcast"), KeyboardButton("🎁 Gift Points")],
-            [KeyboardButton("💎 Add Premium"), KeyboardButton("🚫 Remove Premium")],
-            [KeyboardButton("👥 View Users"), KeyboardButton("📊 Full Stats")],
-            [KeyboardButton("🔄 Refresh Proxies")],
-            [KeyboardButton("↩️ Back")],
-        ],
-        resize_keyboard=True,
-    )
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("📢 Broadcast"), KeyboardButton("🎁 Gift Points")],
+        [KeyboardButton("💎 Add Premium"), KeyboardButton("🚫 Remove Premium")],
+        [KeyboardButton("👥 View Users"), KeyboardButton("📊 Full Stats")],
+        [KeyboardButton("🔄 Refresh Proxies")],
+        [KeyboardButton("↩️ Back")],
+    ], resize_keyboard=True)
 
 
 def gift_points_kb():
-    return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("👤 To One User"), KeyboardButton("🌍 To Everyone")],
-            [KeyboardButton("↩️ Back")],
-        ],
-        resize_keyboard=True,
-    )
+    return ReplyKeyboardMarkup([
+        [KeyboardButton("👤 To One User"), KeyboardButton("🌍 To Everyone")],
+        [KeyboardButton("↩️ Back")],
+    ], resize_keyboard=True)
 
 
 async def send_main(update, ctx, caption=None):
     uid = update.effective_user.id
     text = caption or f"<pre>{head('MAIN MENU')}</pre>\nChoose your action below."
     kb = main_menu_kb(uid)
+
     if update.callback_query:
         try:
-            await update.callback_query.edit_message_caption(
-                caption=text, parse_mode=ParseMode.HTML
-            )
+            await update.callback_query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
             return
         except Exception:
             pass
+
     if update.message:
-        if os.path.exists("image.jpg"):
-            await update.message.reply_photo(
-                photo="image.jpg",
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb,
-            )
-        else:
-            await update.message.reply_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=kb
-            )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
     else:
-        await update.effective_chat.send_message(
-            text, parse_mode=ParseMode.HTML, reply_markup=kb
-        )
+        await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def edit_or_reply(update, ctx, text, kb=None):
     if update.callback_query:
         try:
-            await update.callback_query.edit_message_caption(
-                caption=text, parse_mode=ParseMode.HTML, reply_markup=kb
-            )
+            await update.callback_query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
             return
         except Exception:
             try:
-                await update.callback_query.edit_message_text(
-                    text=text, parse_mode=ParseMode.HTML, reply_markup=kb
-                )
+                await update.callback_query.edit_message_text(text=text, parse_mode=ParseMode.HTML, reply_markup=kb)
                 return
             except Exception:
                 pass
+
     if update.message:
-        if os.path.exists("image.jpg"):
-            await update.message.reply_photo(
-                photo="image.jpg",
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb,
-            )
-        else:
-            await update.message.reply_text(
-                text, parse_mode=ParseMode.HTML, reply_markup=kb
-            )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
 
 async def guard(update, ctx):
@@ -1070,23 +952,10 @@ async def guard(update, ctx):
         ok = await check_force_join(ctx.bot, uid)
         USERS[str(uid)]["verified_join"] = ok
         if not ok:
-            await edit_or_reply(
-                update,
-                ctx,
-                f"<pre>{head('JOIN REQUIRED')}</pre>\n"
-                f"Please join our channel and group to continue.",
-                force_join_inline(),
-            )
+            await edit_or_reply(update, ctx, f"<pre>{head('JOIN REQUIRED')}</pre>\nPlease join our channel and group to continue.", force_join_inline())
             return False
     if not is_premium(uid):
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('PREMIUM ONLY')}</pre>\n"
-            f"This bot is for <b>premium users</b>.\n"
-            f"Contact admin to activate your access.",
-            premium_inline(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('PREMIUM ONLY')}</pre>\nThis bot is for <b>premium users</b>.\nContact admin to activate your access.", premium_inline())
         return False
     return True
 
@@ -1111,18 +980,12 @@ async def cmd_start(update, ctx):
                         add_points(ref_id, BONUS_REF_POINTS, "bonus 3ref")
                     db_save()
                     try:
-                        await ctx.bot.send_message(
-                            int(ref_id),
-                            f"🎉 New referral joined!\n"
-                            f"<b>+{POINTS_PER_REF} points</b> credited.",
-                            parse_mode=ParseMode.HTML,
-                        )
+                        await ctx.bot.send_message(int(ref_id), f"🎉 New referral joined!\n<b>+{POINTS_PER_REF} points</b> credited.", parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
 
     if not await guard(update, ctx):
         return
-
     await send_main(update, ctx)
 
 
@@ -1141,29 +1004,12 @@ async def on_callback(update, ctx):
         db_save()
         if ok:
             if not is_premium(uid) and not is_admin(uid):
-                await q.edit_message_caption(
-                    caption=f"<pre>{head('PREMIUM ONLY')}</pre>\n"
-                    f"Contact admin to activate access.",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=premium_inline(),
-                )
+                await q.edit_message_caption(caption=f"<pre>{head('PREMIUM ONLY')}</pre>\nContact admin to activate access.", parse_mode=ParseMode.HTML, reply_markup=premium_inline())
                 return
-            await q.edit_message_caption(
-                caption=f"<pre>{head('VERIFIED')}</pre>\n✅ You are verified.",
-                parse_mode=ParseMode.HTML,
-            )
-            await ctx.bot.send_message(
-                uid,
-                f"<pre>{head('MAIN MENU')}</pre>\nChoose your action:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=main_menu_kb(uid),
-            )
+            await q.edit_message_caption(caption=f"<pre>{head('VERIFIED')}</pre>\n✅ You are verified.", parse_mode=ParseMode.HTML)
+            await ctx.bot.send_message(uid, f"<pre>{head('MAIN MENU')}</pre>\nChoose your action:", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(uid))
         else:
-            await q.edit_message_caption(
-                caption="❌ You haven't joined yet. Please join and try again.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=force_join_inline(),
-            )
+            await q.edit_message_caption(caption="❌ You haven't joined yet. Please join and try again.", parse_mode=ParseMode.HTML, reply_markup=force_join_inline())
 
 
 async def handle_text(update, ctx):
@@ -1173,24 +1019,12 @@ async def handle_text(update, ctx):
     ensure_user(tg_user)
     step = ctx.user_data.get("step")
 
-    if text == "/cancel" or text == "↩️ Back":
+    if text in ("/cancel", "↩️ Back"):
         ctx.user_data.clear()
         if not await guard(update, ctx):
             return
-        if is_admin(uid) and step in (
-            "admin_broadcast",
-            "admin_gift_one_id",
-            "admin_gift_one_amt",
-            "admin_gift_all",
-            "admin_addprem",
-            "admin_delprem",
-        ):
-            await edit_or_reply(
-                update,
-                ctx,
-                admin_caption(),
-                admin_menu_kb(),
-            )
+        if is_admin(uid) and step in ("admin_broadcast", "admin_gift_one_id", "admin_gift_one_amt", "admin_gift_all", "admin_addprem", "admin_delprem"):
+            await edit_or_reply(update, ctx, admin_caption(), admin_menu_kb())
             return
         await send_main(update, ctx)
         return
@@ -1205,56 +1039,29 @@ async def handle_text(update, ctx):
     if text == "⚡ Quick Report":
         ctx.user_data["step"] = "quick_add"
         ctx.user_data["quick_queue"] = []
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('QUICK REPORT')}</pre>\n"
-            f"Send one URL per line. Type will randomize.\n"
-            f"Tap <b>↩️ Back</b> to cancel.",
-            cancel_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('QUICK REPORT')}</pre>\nSend one URL per line. Type will randomize.\nTap <b>↩️ Back</b> to cancel.", cancel_kb())
         return
 
     if text == "🎛 Custom Report":
         ctx.user_data["step"] = "custom_type"
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('CUSTOM REPORT')}</pre>\nSelect target type:",
-            type_menu_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('CUSTOM REPORT')}</pre>\nSelect target type:", type_menu_kb())
         return
 
     if text == "👥 My Accounts":
         ig = USERS[str(uid)].get("ig_accounts", {})
+        lines = [f"<pre>{head('MY ACCOUNTS')}</pre>"]
         if not ig:
-            lines = [f"<pre>{head('MY ACCOUNTS')}</pre>", "<i>No accounts yet.</i>"]
+            lines.append("<i>No accounts yet.</i>")
         else:
-            lines = [f"<pre>{head('MY ACCOUNTS')}</pre>"]
             for u in ig.keys():
                 lines.append(f"◈ <code>{u[:3]}***{u[-3:]}</code>")
-        rows = [
-            [KeyboardButton("➕ Add Instagram"), KeyboardButton("🗑 Remove One")],
-            [KeyboardButton("🚪 Logout All"), KeyboardButton("↩️ Back")],
-        ]
-        await edit_or_reply(
-            update,
-            ctx,
-            "\n".join(lines),
-            ReplyKeyboardMarkup(rows, resize_keyboard=True),
-        )
+        rows = [[KeyboardButton("➕ Add Instagram"), KeyboardButton("🗑 Remove One")], [KeyboardButton("🚪 Logout All"), KeyboardButton("↩️ Back")]]
+        await edit_or_reply(update, ctx, "\n".join(lines), ReplyKeyboardMarkup(rows, resize_keyboard=True))
         return
 
     if text == "➕ Add Instagram":
         ctx.user_data["step"] = "add_ig"
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('ADD ACCOUNT')}</pre>\n"
-            f"Send <code>username:password</code>\n"
-            f"<i>Message auto-deleted.</i>",
-            cancel_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('ADD ACCOUNT')}</pre>\nSend <code>username:password</code>\n<i>Message auto-deleted.</i>", cancel_kb())
         return
 
     if text == "🗑 Remove One":
@@ -1265,12 +1072,7 @@ async def handle_text(update, ctx):
         rows = [[KeyboardButton(f"🗑 {u[:3]}***{u[-3:]}")] for u in ig.keys()]
         rows.append([KeyboardButton("↩️ Back")])
         ctx.user_data["step"] = "remove_ig"
-        await edit_or_reply(
-            update,
-            ctx,
-            "Select account to remove:",
-            ReplyKeyboardMarkup(rows, resize_keyboard=True),
-        )
+        await edit_or_reply(update, ctx, "Select account to remove:", ReplyKeyboardMarkup(rows, resize_keyboard=True))
         return
 
     if text.startswith("🗑 ") and step == "remove_ig":
@@ -1303,67 +1105,43 @@ async def handle_text(update, ctx):
 
     if text == "🌐 Proxies":
         stats = PM.stats()
+        lines = [f"<pre>{head('PROXIES')}</pre>"]
         if not stats:
-            lines = [f"<pre>{head('PROXIES')}</pre>", "No active proxies."]
+            lines.append("No active proxies.")
         else:
-            lines = [f"<pre>{head('PROXIES')}</pre>"]
             for p in stats[:8]:
-                cd = f" ⏸{p['cooldown']}s" if p["cooldown"] else ""
+                cd = f" ⏸{p['cooldown']}s" if p['cooldown'] else ""
                 lines.append(f"◈ <code>{p['key'][:30]}</code>\n   ⚡{p['latency']}s ✘{p['fails']}{cd}")
-        await edit_or_reply(
-            update, ctx, "\n".join(lines), main_menu_kb(uid)
-        )
+        await edit_or_reply(update, ctx, "\n".join(lines), main_menu_kb(uid))
         return
 
     if text == "👤 Profile":
-        await edit_or_reply(
-            update, ctx, profile_caption(uid), main_menu_kb(uid)
-        )
+        await edit_or_reply(update, ctx, profile_caption(uid), main_menu_kb(uid))
         return
 
     if text == "🏆 Leaderboard":
-        await edit_or_reply(
-            update, ctx, leaderboard_caption(), main_menu_kb(uid)
-        )
+        await edit_or_reply(update, ctx, leaderboard_caption(), main_menu_kb(uid))
         return
 
     if text == "🎁 Refer & Earn":
         me = await ctx.bot.get_me()
-        await edit_or_reply(
-            update,
-            ctx,
-            refer_caption(uid, me.username),
-            main_menu_kb(uid),
-        )
+        await edit_or_reply(update, ctx, refer_caption(uid, me.username), main_menu_kb(uid))
         return
 
     if text == "📊 My Stats":
         u = USERS[str(uid)]
         refs = len(u.get("referrals", []))
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('MY STATS')}</pre>\n"
-            f"<b>Points</b> · {u.get('points',0):,}\n"
-            f"<b>Referrals</b> · {refs}\n"
-            f"<b>Reports</b> · {u.get('total_reports',0)}\n"
-            f"<b>Success</b> · ✅ {u.get('success_reports',0)}\n"
-            f"<b>Accounts</b> · {len(u.get('ig_accounts', {}))}",
-            main_menu_kb(uid),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('MY STATS')}</pre>\n<b>Points</b> · {u.get('points',0):,}\n<b>Referrals</b> · {refs}\n<b>Reports</b> · {u.get('total_reports',0)}\n<b>Success</b> · ✅ {u.get('success_reports',0)}\n<b>Accounts</b> · {len(u.get('ig_accounts', {}))}", main_menu_kb(uid))
         return
 
     if text == "📜 History":
-        hist = [h for h in DB["history"] if h.get("uid") == uid][-8:]
+        hist = [h for h in DB.get("history", []) if h.get("uid") == uid][-8:]
         if not hist:
             await edit_or_reply(update, ctx, "No history yet.", main_menu_kb(uid))
             return
         lines = [f"<pre>{head('RECENT REPORTS')}</pre>"]
         for h in reversed(hist):
-            lines.append(
-                f"• <code>{h.get('target','?')[:22]}</code>\n"
-                f"   ×{h.get('amount',0)} · ✔{h.get('success',0)} ✘{h.get('failed',0)}"
-            )
+            lines.append(f"• <code>{h.get('target','?')[:22]}</code>\n   ×{h.get('amount',0)} · ✔{h.get('success',0)} ✘{h.get('failed',0)}")
         await edit_or_reply(update, ctx, "\n".join(lines), main_menu_kb(uid))
         return
 
@@ -1372,50 +1150,33 @@ async def handle_text(update, ctx):
         return
 
     if text == "🛡 Admin Panel" and is_admin(uid):
-        await edit_or_reply(
-            update, ctx, admin_caption(), admin_menu_kb()
-        )
+        await edit_or_reply(update, ctx, admin_caption(), admin_menu_kb())
         return
 
     if is_admin(uid):
         if text == "📢 Broadcast":
             ctx.user_data["step"] = "admin_broadcast"
-            await edit_or_reply(
-                update,
-                ctx,
-                f"<pre>{head('BROADCAST')}</pre>\nSend the message to broadcast:",
-                cancel_kb(),
-            )
+            await edit_or_reply(update, ctx, f"<pre>{head('BROADCAST')}</pre>\nSend the message to broadcast:", cancel_kb())
             return
         if text == "🎁 Gift Points":
             ctx.user_data["step"] = "admin_gift_menu"
-            await edit_or_reply(
-                update, ctx, "Choose gift mode:", gift_points_kb()
-            )
+            await edit_or_reply(update, ctx, "Choose gift mode:", gift_points_kb())
             return
         if text == "👤 To One User":
             ctx.user_data["step"] = "admin_gift_one_id"
-            await edit_or_reply(
-                update, ctx, "Send the user ID:", cancel_kb()
-            )
+            await edit_or_reply(update, ctx, "Send the user ID:", cancel_kb())
             return
         if text == "🌍 To Everyone":
             ctx.user_data["step"] = "admin_gift_all"
-            await edit_or_reply(
-                update, ctx, "Send amount for everyone:", cancel_kb()
-            )
+            await edit_or_reply(update, ctx, "Send amount for everyone:", cancel_kb())
             return
         if text == "💎 Add Premium":
             ctx.user_data["step"] = "admin_addprem"
-            await edit_or_reply(
-                update, ctx, "Send user ID to add premium:", cancel_kb()
-            )
+            await edit_or_reply(update, ctx, "Send user ID to add premium:", cancel_kb())
             return
         if text == "🚫 Remove Premium":
             ctx.user_data["step"] = "admin_delprem"
-            await edit_or_reply(
-                update, ctx, "Send user ID to remove premium:", cancel_kb()
-            )
+            await edit_or_reply(update, ctx, "Send user ID to remove premium:", cancel_kb())
             return
         if text == "👥 View Users":
             lines = [f"<pre>{head('USERS')}</pre>"]
@@ -1423,10 +1184,7 @@ async def handle_text(update, ctx):
             for uid_, u in sorted_users:
                 pm = "💎" if u.get("premium") else "•"
                 ig = len(u.get("ig_accounts", {}))
-                lines.append(
-                    f"{pm} <code>{uid_}</code> {u.get('first_name','?')[:14]}\n"
-                    f"   refs:{len(u.get('referrals',[]))} ig:{ig} pts:{u.get('points',0)}"
-                )
+                lines.append(f"{pm} <code>{uid_}</code> {u.get('first_name','?')[:14]}\n   refs:{len(u.get('referrals',[]))} ig:{ig} pts:{u.get('points',0)}")
             await edit_or_reply(update, ctx, "\n".join(lines), admin_menu_kb())
             return
         if text == "📊 Full Stats":
@@ -1436,28 +1194,12 @@ async def handle_text(update, ctx):
             total_success = sum(u.get("success_reports", 0) for u in USERS.values())
             total_refs = sum(len(u.get("referrals", [])) for u in USERS.values())
             total_pts = sum(u.get("points", 0) for u in USERS.values())
-            await edit_or_reply(
-                update,
-                ctx,
-                f"<pre>{head('FULL STATS')}</pre>\n"
-                f"Users · {total_users}\n"
-                f"Premium · {premium_users}\n"
-                f"Logged IG · {logged}\n"
-                f"Success Reports · {total_success}\n"
-                f"Total Refs · {total_refs}\n"
-                f"Points Circulating · {total_pts:,}",
-                admin_menu_kb(),
-            )
+            await edit_or_reply(update, ctx, f"<pre>{head('FULL STATS')}</pre>\nUsers · {total_users}\nPremium · {premium_users}\nLogged IG · {logged}\nSuccess Reports · {total_success}\nTotal Refs · {total_refs}\nPoints Circulating · {total_pts:,}", admin_menu_kb())
             return
         if text == "🔄 Refresh Proxies":
             await edit_or_reply(update, ctx, "⏳ Refreshing proxies...")
             await PM.refresh_all(force=True)
-            await edit_or_reply(
-                update,
-                ctx,
-                f"✔ Done. {len(PM)} proxies active.",
-                admin_menu_kb(),
-            )
+            await edit_or_reply(update, ctx, f"✔ Done. {len(PM)} proxies active.", admin_menu_kb())
             return
 
     if step == "admin_broadcast":
@@ -1470,12 +1212,7 @@ async def handle_text(update, ctx):
             except Exception:
                 pass
         ctx.user_data.clear()
-        await edit_or_reply(
-            update,
-            ctx,
-            f"✔ Broadcast sent to {success} users.",
-            admin_menu_kb(),
-        )
+        await edit_or_reply(update, ctx, f"✔ Broadcast sent to {success} users.", admin_menu_kb())
         return
 
     if step == "admin_gift_one_id":
@@ -1496,20 +1233,11 @@ async def handle_text(update, ctx):
         add_points(target, amt, f"admin gift by {uid}")
         db_save()
         try:
-            await ctx.bot.send_message(
-                int(target),
-                f"🎁 You received <b>{amt:,} points</b> from admin.",
-                parse_mode=ParseMode.HTML,
-            )
+            await ctx.bot.send_message(int(target), f"🎁 You received <b>{amt:,} points</b> from admin.", parse_mode=ParseMode.HTML)
         except Exception:
             pass
         ctx.user_data.clear()
-        await edit_or_reply(
-            update,
-            ctx,
-            f"✔ Gave {amt:,} pts to <code>{target}</code>.",
-            admin_menu_kb(),
-        )
+        await edit_or_reply(update, ctx, f"✔ Gave {amt:,} pts to <code>{target}</code>.", admin_menu_kb())
         return
 
     if step == "admin_gift_all":
@@ -1518,15 +1246,10 @@ async def handle_text(update, ctx):
             return
         amt = int(text)
         for uid_ in USERS.keys():
-            add_points(uid_, amt, f"admin gift-all")
+            add_points(uid_, amt, "admin gift-all")
         db_save()
         ctx.user_data.clear()
-        await edit_or_reply(
-            update,
-            ctx,
-            f"✔ Gave {amt:,} pts to everyone ({len(USERS)} users).",
-            admin_menu_kb(),
-        )
+        await edit_or_reply(update, ctx, f"✔ Gave {amt:,} pts to everyone ({len(USERS)} users).", admin_menu_kb())
         return
 
     if step == "admin_addprem":
@@ -1540,15 +1263,11 @@ async def handle_text(update, ctx):
         USERS[text]["premium_until"] = 0
         db_save()
         try:
-            await ctx.bot.send_message(
-                int(text), "💎 Your premium has been activated!"
-            )
+            await ctx.bot.send_message(int(text), "💎 Your premium has been activated!")
         except Exception:
             pass
         ctx.user_data.clear()
-        await edit_or_reply(
-            update, ctx, f"✔ Premium added to <code>{text}</code>.", admin_menu_kb()
-        )
+        await edit_or_reply(update, ctx, f"✔ Premium added to <code>{text}</code>.", admin_menu_kb())
         return
 
     if step == "admin_delprem":
@@ -1561,9 +1280,7 @@ async def handle_text(update, ctx):
         USERS[text]["premium"] = False
         db_save()
         ctx.user_data.clear()
-        await edit_or_reply(
-            update, ctx, f"✔ Premium removed from <code>{text}</code>.", admin_menu_kb()
-        )
+        await edit_or_reply(update, ctx, f"✔ Premium removed from <code>{text}</code>.", admin_menu_kb())
         return
 
     if step == "add_ig":
@@ -1572,9 +1289,7 @@ async def handle_text(update, ctx):
         except Exception:
             pass
         if ":" not in text:
-            await update.message.reply_text(
-                "❌ Format: <code>username:password</code>", parse_mode=ParseMode.HTML
-            )
+            await update.message.reply_text("❌ Format: <code>username:password</code>", parse_mode=ParseMode.HTML)
             return
         u, p = text.split(":", 1)
         u, p = u.strip(), p.strip()
@@ -1606,23 +1321,17 @@ async def handle_text(update, ctx):
             if d:
                 await asyncio.to_thread(close_driver, d)
         if proxy:
-            PM.mark_ok(proxy) if ok else PM.mark_fail(proxy)
+            if ok:
+                PM.mark_ok(proxy)
+            else:
+                PM.mark_fail(proxy)
         if ok:
             ig[u] = p
             db_save()
             ctx.user_data.clear()
-            await m.edit_text(
-                f"<pre>{head('ACCOUNT ADDED')}</pre>\n"
-                f"<b>Total accounts</b> · {len(ig)}\n\n"
-                f"Add more or return to menu.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=main_menu_kb(uid),
-            )
+            await m.edit_text(f"<pre>{head('ACCOUNT ADDED')}</pre>\n<b>Total accounts</b> · {len(ig)}\n\nAdd more or return to menu.", parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(uid))
         else:
-            await m.edit_text(
-                "❌ Login failed. Try again.",
-                reply_markup=main_menu_kb(uid),
-            )
+            await m.edit_text("❌ Login failed. Try again.", reply_markup=main_menu_kb(uid))
         return
 
     if step == "quick_add":
@@ -1631,32 +1340,18 @@ async def handle_text(update, ctx):
             await update.message.reply_text("Send valid URLs.")
             return
         ctx.user_data["quick_queue"].extend(parts)
-        await update.message.reply_text(
-            f"✔ {len(ctx.user_data['quick_queue'])} URLs queued.\n"
-            f"Send more or type amount (1 – {CAP}) to start."
-        )
+        await update.message.reply_text(f"✔ {len(ctx.user_data['quick_queue'])} URLs queued.\nSend more or type amount (1 – {CAP}) to start.")
         return
 
     if step == "custom_type":
-        mapping = {
-            "👤 Profile": "profile",
-            "🖼 Post": "post",
-            "🎞 Reel": "reel",
-            "📖 Story": "story",
-            "🎲 Random Mix": "random",
-        }
+        mapping = {"👤 Profile": "profile", "🖼 Post": "post", "🎞 Reel": "reel", "📖 Story": "story", "🎲 Random Mix": "random"}
         tt = mapping.get(text)
         if not tt:
             await update.message.reply_text("Pick from the menu.")
             return
         ctx.user_data["target_type"] = tt
         ctx.user_data["step"] = "custom_reason"
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('CHOOSE REASON')}</pre>\nTarget · {TYPE_MAP.get(tt, ('','',''))[1] if tt != 'random' else 'Random Mix'}",
-            reason_menu_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('CHOOSE REASON')}</pre>\nTarget · {TYPE_MAP.get(tt, ('', ''))[1] if tt != 'random' else 'Random Mix'}", reason_menu_kb())
         return
 
     if step == "custom_reason":
@@ -1669,12 +1364,7 @@ async def handle_text(update, ctx):
                 return
             ctx.user_data["reason_key"] = m.group(1)
         ctx.user_data["step"] = "custom_url"
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('TARGET URL')}</pre>\nSend URL:",
-            cancel_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('TARGET URL')}</pre>\nSend URL:", cancel_kb())
         return
 
     if step == "custom_url":
@@ -1683,12 +1373,7 @@ async def handle_text(update, ctx):
             return
         ctx.user_data["url"] = text
         ctx.user_data["step"] = "custom_amount"
-        await edit_or_reply(
-            update,
-            ctx,
-            f"<pre>{head('AMOUNT')}</pre>\nSend amount (1 – {CAP}):",
-            cancel_kb(),
-        )
+        await edit_or_reply(update, ctx, f"<pre>{head('AMOUNT')}</pre>\nSend amount (1 – {CAP}):", cancel_kb())
         return
 
     if step == "custom_amount":
@@ -1721,7 +1406,6 @@ async def handle_text(update, ctx):
 
     if not is_admin(uid):
         return
-
     await edit_or_reply(update, ctx, "Unknown action. Use the menu.", main_menu_kb(uid))
 
 
@@ -1730,18 +1414,19 @@ def pick_reason(rk):
 
 
 def pick_type(tt):
-    return random.choice(["profile", "post", "reel"]) if tt == "random" else tt
+    types = ["profile", "post", "reel", "story"]
+    return random.choice(types) if tt == "random" else tt
+
+
+state_lock = asyncio.Lock()
 
 
 async def run_batch(message, update, ctx, ttype, url, rkey, amount):
     uid = str(update.effective_user.id)
-    ig = USERS[uid].get("ig_accounts", {})
+    ig = USERS.get(uid, {}).get("ig_accounts", {})
 
     if not ig:
-        await message.edit_text(
-            "❌ No Instagram account. Add one from 👥 My Accounts.",
-            parse_mode=ParseMode.HTML,
-        )
+        await message.edit_text("❌ No Instagram account. Add one from 👥 My Accounts.", parse_mode=ParseMode.HTML)
         return
 
     if PROXY_ENABLED:
@@ -1756,10 +1441,10 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
         return
 
     per = max(1, amount // len(accounts))
-    tasks = [(u, p, per) for u, p in accounts]
+    tasks = [[u, p, per] for u, p in accounts]
     rem = amount - per * len(accounts)
     for i in range(rem):
-        tasks[i % len(tasks)] = (tasks[i % len(tasks)][0], tasks[i % len(tasks)][1], tasks[i % len(tasks)][2] + 1)
+        tasks[i % len(tasks)][2] += 1
 
     state = {"cur": 0, "ok": 0, "fail": 0, "last": "", "acc_used": 0, "proxy_used": 0}
     stop = asyncio.Event()
@@ -1769,17 +1454,17 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
         last = ""
         i = 0
         while not stop.is_set():
-            pct = int(state["cur"] / amount * 100) if amount else 0
-            el = int(time.time() - t0)
-            rate = round(state["cur"] / max(el, 1) * 60, 1)
-            f = SPIN[i % len(SPIN)]
-            body = (
-                f"<pre>{head('PROCESSING')}</pre>\n"
-                f"{f}  {bar(pct)}  {pct}%\n\n"
-                f"<b>▸ {state['cur']} / {amount}</b>\n"
-                f"✔ {state['ok']}   ✘ {state['fail']}   ⚡ {rate}/m\n"
-                f"👥 {state['acc_used']}   🌐 {state['proxy_used']}   ⧗ {el}s"
-            )
+            async with state_lock:
+                pct = int(state["cur"] / amount * 100) if amount else 0
+                el = int(time.time() - t0)
+                rate = round(state["cur"] / max(el, 1) * 60, 1)
+                body = (
+                    f"<pre>{head('PROCESSING')}</pre>\n"
+                    f"{SPIN[i % len(SPIN)]}  {bar(pct)}  {pct}%\n\n"
+                    f"<b>▸ {state['cur']} / {amount}</b>\n"
+                    f"✔ {state['ok']}   ✘ {state['fail']}   ⚡ {rate}/m\n"
+                    f"👥 {state['acc_used']}   🌐 {state['proxy_used']}   ⧗ {el}s"
+                )
             if body != last:
                 try:
                     await message.edit_text(body, parse_mode=ParseMode.HTML)
@@ -1800,9 +1485,10 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
             log.warning(f"driver err: {e}")
             return
 
-        state["acc_used"] += 1
-        if proxy:
-            state["proxy_used"] += 1
+        async with state_lock:
+            state["acc_used"] += 1
+            if proxy:
+                state["proxy_used"] += 1
 
         try:
             loaded = await asyncio.to_thread(ck_load, d, uid, igu)
@@ -1824,15 +1510,17 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
             use_reason = pick_reason(rkey)
             try:
                 await asyncio.to_thread(do_report, d, use_type, url, use_reason)
-                state["ok"] += 1
+                async with state_lock:
+                    state["ok"] += 1
                 USERS[uid]["success_reports"] = USERS[uid].get("success_reports", 0) + 1
                 add_points(uid, POINTS_PER_REPORT, "success report")
                 if proxy:
                     PM.mark_ok(proxy)
-                log.info(f"[{uid}] {igu[:3]}*** {state['cur']+1}/{amount} ok [{use_type}/{use_reason}]")
+                log.info(f"[{uid}] {igu[:3]}*** {state['cur'] + 1}/{amount} ok [{use_type}/{use_reason}]")
             except Exception as e:
-                state["fail"] += 1
-                state["last"] = f"{igu[:3]}***: {str(e)[:60]}"
+                async with state_lock:
+                    state["fail"] += 1
+                    state["last"] = f"{igu[:3]}***: {str(e)[:60]}"
                 if proxy:
                     PM.mark_fail(proxy)
                 log.warning(f"[{uid}] {igu[:3]}*** fail: {e}")
@@ -1842,7 +1530,8 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
                     except Exception:
                         pass
                     break
-            state["cur"] += 1
+            async with state_lock:
+                state["cur"] += 1
             await asyncio.sleep(random.uniform(D_MIN, D_MAX))
 
         try:
@@ -1861,19 +1550,17 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
 
     el = int(time.time() - t0)
     USERS[uid]["total_reports"] = USERS[uid].get("total_reports", 0) + amount
-    DB["history"].append(
-        {
-            "uid": uid,
-            "target": uname(url),
-            "type": ttype,
-            "reason": rkey,
-            "amount": amount,
-            "success": state["ok"],
-            "failed": state["fail"],
-            "ts": datetime.now().isoformat(),
-            "elapsed": el,
-        }
-    )
+    DB["history"].append({
+        "uid": uid,
+        "target": uname(url),
+        "type": ttype,
+        "reason": rkey,
+        "amount": amount,
+        "success": state["ok"],
+        "failed": state["fail"],
+        "ts": datetime.now().isoformat(),
+        "elapsed": el,
+    })
     if PROXY_AUTO_PRUNE:
         PM.prune_dead()
     db_save()
@@ -1892,9 +1579,7 @@ async def run_batch(message, update, ctx, ttype, url, rkey, amount):
     if state.get("last"):
         result += f"\n\n<code>Last: {state['last']}</code>"
     try:
-        await message.edit_text(
-            result, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(int(uid))
-        )
+        await message.edit_text(result, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb(int(uid)))
     except Exception as e:
         log.warning(f"final edit: {e}")
 
@@ -1911,12 +1596,10 @@ async def periodic_revalidate():
 
 async def on_startup(app):
     log.info(f"{BRAND} booting")
-    await app.bot.set_my_commands(
-        [
-            BotCommand("start", "Open main menu"),
-            BotCommand("cancel", "Cancel current action"),
-        ]
-    )
+    await app.bot.set_my_commands([
+        BotCommand("start", "Open main menu"),
+        BotCommand("cancel", "Cancel current action"),
+    ])
     if PROXY_ENABLED:
         await PM.refresh_all(force=True)
     asyncio.create_task(periodic_revalidate())

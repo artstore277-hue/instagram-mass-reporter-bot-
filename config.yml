@@ -1,21 +1,20 @@
 bot:
-  name: "Instagram Report"
-  author: "Crypto Lord Himself 🧑‍💻"
-  token: "${BOT_TOKEN}"
-  contact: "your_admin_username"
-  max_reports: 200
+  name: "Instagram Report Bot"
+  author: "Fluxo"
+  token: "8677244080:AAGuj5STG67GGHENLgXbfuqwTTBpDK5v9Kk"
+  contact: "@FLU_X0"
   admin_ids:
-    - 123456789
+    - 6128148604
 
 force_join:
-  enabled: true
-  channel: "@learnUp_community"
-  group: "@codex_esports"
-  channel_url: "t.me/learnUp_community"
-  group_url: "t.me/codex_esports"
+  enabled: false
+  channel: "@your_channel"
+  group: "@your_group"
+  channel_url: "https://t.me/your_channel"
+  group_url: "https://t.me/your_group"
 
 referral:
-  enabled: true
+  enabled: false
   points_per_ref: 100
   points_per_report: 300
   bonus_at_count: 3
@@ -33,6 +32,7 @@ selenium:
     - "--no-sandbox"
     - "--disable-dev-shm-usage"
     - "--disable-blink-features=AutomationControlled"
+    - "--disable-gpu"
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 instagram:
@@ -40,7 +40,7 @@ instagram:
   login_url: "https://www.instagram.com/accounts/login/"
 
 proxies:
-  enabled: true
+  enabled: false
   list_file: "proxies.txt"
   state_file: "igx_proxy_state.json"
   check_url: "https://api.ipify.org?format=json"
